@@ -1,17 +1,19 @@
-# qwen_asr — Qwen3-ASR Pure C Inference Engine
+# qwen_asr — Qwen3-ASR Pure C/C++ Inference Engine
 # Makefile
 
 CC = gcc
+CXX = g++
 CFLAGS_BASE = -Wall -Wextra -O3 -march=native -ffast-math
-LDFLAGS = -lm -lpthread
+LDFLAGS = -lm -lpthread -lstdc++
 
 # Platform detection
 UNAME_S := $(shell uname -s)
 
 # Source files
-SRCS = qwen_asr.c qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c qwen_asr_audio.c qwen_asr_encoder.c qwen_asr_decoder.c qwen_asr_tokenizer.c qwen_asr_safetensors.c
-OBJS = $(SRCS:.c=.o)
-MAIN = main.c
+C_SRCS = qwen_asr_kernels.c qwen_asr_kernels_generic.c qwen_asr_kernels_neon.c qwen_asr_kernels_avx.c
+CXX_SRCS = qwen_asr.cpp qwen_asr_audio.cpp qwen_asr_encoder.cpp qwen_asr_decoder.cpp qwen_asr_tokenizer.cpp qwen_asr_safetensors.cpp
+OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
+MAIN = main.cc
 TARGET = qwen_asr
 
 # Debug build flags
@@ -23,7 +25,7 @@ DEBUG_CFLAGS = -Wall -Wextra -g -O0 -DDEBUG -fsanitize=address
 all: help
 
 help:
-	@echo "qwen_asr — Qwen3-ASR Pure C Inference - Build Targets"
+	@echo "qwen_asr — Qwen3-ASR Pure C/C++ Inference - Build Targets"
 	@echo ""
 	@echo "Choose a backend:"
 	@echo "  make blas     - With BLAS acceleration (Accelerate/OpenBLAS)"
@@ -57,10 +59,16 @@ blas:
 # Build rules
 # =============================================================================
 $(TARGET): $(OBJS) main.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c qwen_asr.h qwen_asr_kernels.h
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.cpp
+	$(CXX) $(CFLAGS) -std=c++11 -c -o $@ $<
+
+%.o: %.cc
+	$(CXX) $(CFLAGS) -std=c++11 -c -o $@ $<
 
 # Debug build
 debug: CFLAGS = $(DEBUG_CFLAGS)
@@ -77,7 +85,7 @@ clean:
 
 info:
 	@echo "Platform: $(UNAME_S)"
-	@echo "Compiler: $(CC)"
+	@echo "Compiler: $(CC) / $(CXX)"
 	@echo ""
 ifeq ($(UNAME_S),Darwin)
 	@echo "Backend: blas (Apple Accelerate)"
@@ -91,14 +99,14 @@ test:
 # =============================================================================
 # Dependencies
 # =============================================================================
-qwen_asr.o: qwen_asr.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_audio.h qwen_asr_tokenizer.h
+qwen_asr.o: qwen_asr.cpp qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h qwen_asr_audio.h qwen_asr_tokenizer.h log.h
+qwen_asr_encoder.o: qwen_asr_encoder.cpp qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h log.h
+qwen_asr_decoder.o: qwen_asr_decoder.cpp qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h log.h
+qwen_asr_audio.o: qwen_asr_audio.cpp qwen_asr_audio.h log.h
+qwen_asr_tokenizer.o: qwen_asr_tokenizer.cpp qwen_asr_tokenizer.h log.h
+qwen_asr_safetensors.o: qwen_asr_safetensors.cpp qwen_asr_safetensors.h log.h
 qwen_asr_kernels.o: qwen_asr_kernels.c qwen_asr_kernels.h qwen_asr_kernels_impl.h
 qwen_asr_kernels_generic.o: qwen_asr_kernels_generic.c qwen_asr_kernels_impl.h
 qwen_asr_kernels_neon.o: qwen_asr_kernels_neon.c qwen_asr_kernels_impl.h
 qwen_asr_kernels_avx.o: qwen_asr_kernels_avx.c qwen_asr_kernels_impl.h
-qwen_asr_audio.o: qwen_asr_audio.c qwen_asr_audio.h
-qwen_asr_encoder.o: qwen_asr_encoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h
-qwen_asr_decoder.o: qwen_asr_decoder.c qwen_asr.h qwen_asr_kernels.h qwen_asr_safetensors.h
-qwen_asr_tokenizer.o: qwen_asr_tokenizer.c qwen_asr_tokenizer.h
-qwen_asr_safetensors.o: qwen_asr_safetensors.c qwen_asr_safetensors.h
-main.o: main.c qwen_asr.h qwen_asr_kernels.h
+main.o: main.cc qwen_asr.h qwen_asr_kernels.h log.h

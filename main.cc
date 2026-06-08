@@ -7,6 +7,7 @@
 #include "qwen_asr.h"
 #include "qwen_asr_audio.h"
 #include "qwen_asr_kernels.h"
+#include "log.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -16,10 +16,20 @@
 #include "qwen_asr.h"
 #include "qwen_asr_kernels.h"
 #include "qwen_asr_safetensors.h"
+#include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/time.h>
+
+static double enc_get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+}
+
+extern int qwen_verbose;
 
 /* ========================================================================
  * Weight Loading
@@ -31,7 +41,7 @@ static float *load_f32(multi_safetensors_t *ms, const char *name) {
     safetensors_file_t *sf = NULL;
     const safetensor_t *t = multi_safetensors_find(ms, name, &sf);
     if (!t) {
-        fprintf(stderr, "encoder: weight not found: %s\n", name);
+        tylog("encoder: weight not found: %s", name);
         return NULL;
     }
     return safetensors_get_f32(sf, t);
@@ -44,7 +54,7 @@ static float *load_bf16_as_f32(multi_safetensors_t *ms, const char *name) {
     safetensors_file_t *sf = NULL;
     const safetensor_t *t = multi_safetensors_find(ms, name, &sf);
     if (!t) {
-        fprintf(stderr, "encoder: weight not found: %s\n", name);
+        tylog("encoder: weight not found: %s", name);
         return NULL;
     }
     uint16_t *bf16 = safetensors_get_bf16_direct(sf, t);
@@ -136,7 +146,7 @@ int qwen_encoder_load(qwen_encoder_t *enc, multi_safetensors_t *ms,
 
         if (!l->wq_weight || !l->wk_weight ||
             !l->wv_weight || !l->wo_weight) {
-            fprintf(stderr, "encoder: failed to load layer %d weights\n", i);
+            tylog("encoder: failed to load layer %d weights", i);
             return -1;
         }
 
@@ -183,6 +193,8 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
 
 
     /* ---- Per-chunk Conv2D stem ---- */
+    double enc_t0 = enc_get_time_ms();
+    double stage_t0 = enc_t0;
     /* mel: [128, mel_frames] (already in Conv2D-friendly layout)
      * Process chunks of chunk_size frames, each producing tokens_per_chunk tokens */
     int n_chunks = (mel_frames + chunk_size - 1) / chunk_size;
@@ -286,6 +298,10 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
         token_offset += w3;
     }
 
+    if (qwen_verbose >= 1)
+        tylog("    [enc-perf] Conv2D stem: %d chunks, %d tokens (%.0f ms)",
+                n_chunks, total_tokens, enc_get_time_ms() - stage_t0);
+
     /* ---- Build attention window boundaries ---- */
     /* Window size = tokens_per_chunk * (n_window_infer / chunk_size) */
     int window_token_size = tokens_per_chunk * (n_window_infer / chunk_size);
@@ -309,10 +325,13 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
 
     float scale = 1.0f / sqrtf((float)head_dim);
 
+    stage_t0 = enc_get_time_ms();
     for (int layer = 0; layer < cfg->enc_layers; layer++) {
+        double layer_t0 = enc_get_time_ms();
         qwen_enc_layer_t *l = &enc->layers[layer];
 
         /* ---- Self-attention ---- */
+        double attn_t0 = enc_get_time_ms();
         qwen_layer_norm(x_norm, x, l->attn_norm_weight, l->attn_norm_bias,
                         total_tokens, d_model, 1e-5f);
 
@@ -331,8 +350,10 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
         qwen_linear(proj_out, attn_out, l->wo_weight, l->wo_bias,
                      total_tokens, d_model, d_model);
         qwen_add_inplace(x, proj_out, total_tokens * d_model);
+        double attn_ms = enc_get_time_ms() - attn_t0;
 
         /* ---- FFN ---- */
+        double ffn_t0 = enc_get_time_ms();
         qwen_layer_norm(x_norm, x, l->ffn_norm_weight, l->ffn_norm_bias,
                         total_tokens, d_model, 1e-5f);
 
@@ -343,10 +364,20 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
         qwen_linear(ffn_out, ffn_mid, l->fc2_weight, l->fc2_bias,
                      total_tokens, ffn_dim, d_model);
         qwen_add_inplace(x, ffn_out, total_tokens * d_model);
+        double ffn_ms = enc_get_time_ms() - ffn_t0;
 
+        if (qwen_verbose >= 1)
+            tylog("    [enc-perf] Layer %2d/%d: attn=%.0fms ffn=%.0fms total=%.0fms",
+                    layer + 1, cfg->enc_layers, attn_ms, ffn_ms,
+                    enc_get_time_ms() - layer_t0);
     }
 
+    if (qwen_verbose >= 1)
+        tylog("    [enc-perf] Transformer %d layers total: %.0f ms",
+                cfg->enc_layers, enc_get_time_ms() - stage_t0);
+
     /* Final LayerNorm */
+    stage_t0 = enc_get_time_ms();
     qwen_layer_norm(x, x, enc->ln_post_weight, enc->ln_post_bias,
                     total_tokens, d_model, 1e-5f);
 
@@ -360,6 +391,14 @@ float *qwen_encoder_forward(qwen_ctx_t *ctx, const float *mel, int mel_frames,
     qwen_linear(enc_output, proj_mid, enc->proj2_weight, enc->proj2_bias,
                  total_tokens, d_model, output_dim);
     free(proj_mid);
+
+    if (qwen_verbose >= 1)
+        tylog("    [enc-perf] Final LN + projection: %.0f ms",
+                enc_get_time_ms() - stage_t0);
+
+    if (qwen_verbose >= 1)
+        tylog("    [enc-perf] Encoder total: %.0f ms",
+                enc_get_time_ms() - enc_t0);
 
     /* Clean up */
     free(x); free(x_norm); free(q); free(k); free(v);

@@ -12,6 +12,7 @@
  */
 
 #include "qwen_asr_audio.h"
+#include "log.h"
 #include "qwen_asr_kernels.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +40,7 @@ static uint32_t read_u32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] <
 
 float *qwen_parse_wav_buffer(const uint8_t *data, size_t file_size, int *out_n_samples) {
     if (file_size < 44 || memcmp(data, "RIFF", 4) != 0 || memcmp(data + 8, "WAVE", 4) != 0) {
-        fprintf(stderr, "parse_wav_buffer: not a valid WAV file\n");
+        tylog("parse_wav_buffer: not a valid WAV file");
         return NULL;
     }
 
@@ -69,8 +70,8 @@ float *qwen_parse_wav_buffer(const uint8_t *data, size_t file_size, int *out_n_s
     }
 
     if (audio_format != 1 || bits_per_sample != 16 || pcm_data == NULL || channels < 1) {
-        fprintf(stderr, "parse_wav_buffer: unsupported format (need 16-bit PCM, got fmt=%d bits=%d)\n",
-                audio_format, bits_per_sample);
+        tylog("parse_wav_buffer: unsupported format (need 16-bit PCM, got fmt=%d bits=%d)",
+              audio_format, bits_per_sample);
         return NULL;
     }
 
@@ -170,7 +171,7 @@ float *qwen_parse_wav_buffer(const uint8_t *data, size_t file_size, int *out_n_s
 float *qwen_load_wav(const char *path, int *out_n_samples) {
     FILE *f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "qwen_load_wav: cannot open %s\n", path);
+        tylog("qwen_load_wav: cannot open %s", path);
         return NULL;
     }
     fseek(f, 0, SEEK_END);
@@ -204,21 +205,21 @@ float *qwen_read_pcm_stdin(int *out_n_samples) {
         size += n;
     }
     if (size < 4) {
-        fprintf(stderr, "qwen_read_pcm_stdin: no data on stdin\n");
+        tylog("qwen_read_pcm_stdin: no data on stdin");
         free(buf); return NULL;
     }
     if (qwen_verbose >= 2)
-        fprintf(stderr, "Read %zu bytes from stdin\n", size);
+        tylog("Read %zu bytes from stdin", size);
     if (memcmp(buf, "RIFF", 4) == 0) {
         if (qwen_verbose >= 2)
-            fprintf(stderr, "Detected WAV format on stdin\n");
+            tylog("Detected WAV format on stdin");
         float *samples = qwen_parse_wav_buffer(buf, size, out_n_samples);
         free(buf);
         return samples;
     }
     /* Raw s16le 16kHz mono */
     if (qwen_verbose >= 2)
-        fprintf(stderr, "Treating stdin as raw s16le 16kHz mono\n");
+        tylog("Treating stdin as raw s16le 16kHz mono");
     int n_frames = (int)(size / 2);
     float *samples = (float *)malloc(n_frames * sizeof(float));
     if (!samples) { free(buf); return NULL; }
@@ -311,7 +312,7 @@ float *qwen_mel_spectrogram(const float *samples, int n_samples, int *out_frames
     int n_frames_total = (padded_len - n_fft) / HOP_LENGTH + 1;
     int n_frames = n_frames_total - 1; /* drop last frame */
     if (n_frames <= 0) {
-        fprintf(stderr, "qwen_mel_spectrogram: audio too short (%d samples)\n", n_samples);
+        tylog("qwen_mel_spectrogram: audio too short (%d samples)", n_samples);
         free(padded);
         return NULL;
     }
@@ -490,7 +491,7 @@ qwen_live_audio_t *qwen_live_audio_start_stdin(void) {
     uint8_t header[4096];
     size_t hdr_read = fread(header, 1, sizeof(header), stdin);
     if (hdr_read < 4) {
-        fprintf(stderr, "qwen_live_audio_start_stdin: no data on stdin\n");
+        tylog("qwen_live_audio_start_stdin: no data on stdin");
         return NULL;
     }
 
@@ -528,36 +529,39 @@ qwen_live_audio_t *qwen_live_audio_start_stdin(void) {
         }
 
         if (wav_format != 1 || wav_bits != 16 || wav_channels < 1) {
-            fprintf(stderr, "qwen_live_audio_start_stdin: unsupported WAV format "
-                    "(need 16-bit PCM, got fmt=%d bits=%d)\n", wav_format, wav_bits);
+            tylog("qwen_live_audio_start_stdin: unsupported WAV format "
+                  "(need 16-bit PCM, got fmt=%d bits=%d)",
+                  wav_format, wav_bits);
             return NULL;
         }
         if (wav_sample_rate != SAMPLE_RATE) {
-            fprintf(stderr, "qwen_live_audio_start_stdin: WAV sample rate is %d Hz, "
-                    "but live streaming requires 16000 Hz.\n"
-                    "  Hint: pipe through ffmpeg first:\n"
-                    "    ... | ffmpeg -i pipe:0 -ar 16000 -ac 1 -f s16le pipe:1 | "
-                    "./qwen_asr --stdin --stream\n", wav_sample_rate);
+            tylog("qwen_live_audio_start_stdin: WAV sample rate is %d Hz, "
+                  "but live streaming requires 16000 Hz."
+                  "  Hint: pipe through ffmpeg first:"
+                  "    ... | ffmpeg -i pipe:0 -ar 16000 -ac 1 -f s16le pipe:1 | "
+                  "./qwen_asr --stdin --stream",
+                  wav_sample_rate);
             return NULL;
         }
         if (wav_channels != 1) {
-            fprintf(stderr, "qwen_live_audio_start_stdin: WAV has %d channels, "
-                    "but live streaming requires mono.\n"
-                    "  Hint: pipe through ffmpeg first:\n"
-                    "    ... | ffmpeg -i pipe:0 -ar 16000 -ac 1 -f s16le pipe:1 | "
-                    "./qwen_asr --stdin --stream\n", wav_channels);
+            tylog("qwen_live_audio_start_stdin: WAV has %d channels, "
+                  "but live streaming requires mono."
+                  "  Hint: pipe through ffmpeg first:"
+                  "    ... | ffmpeg -i pipe:0 -ar 16000 -ac 1 -f s16le pipe:1 | "
+                  "./qwen_asr --stdin --stream",
+                  wav_channels);
             return NULL;
         }
         if (data_chunk_offset == 0) {
-            fprintf(stderr, "qwen_live_audio_start_stdin: WAV data chunk not found in header\n");
+            tylog("qwen_live_audio_start_stdin: WAV data chunk not found in header");
             return NULL;
         }
         if (qwen_verbose >= 2)
-            fprintf(stderr, "Live stdin: WAV detected (%d Hz, %d-bit, %d ch, data=%d bytes)\n",
-                    wav_sample_rate, wav_bits, wav_channels, data_chunk_size);
+            tylog("Live stdin: WAV detected (%d Hz, %d-bit, %d ch, data=%d bytes)",
+                  wav_sample_rate, wav_bits, wav_channels, data_chunk_size);
     } else {
         if (qwen_verbose >= 2)
-            fprintf(stderr, "Live stdin: treating as raw s16le 16kHz mono\n");
+            tylog("Live stdin: treating as raw s16le 16kHz mono");
     }
 
     /* Allocate live audio context */
@@ -585,7 +589,7 @@ qwen_live_audio_t *qwen_live_audio_start_stdin(void) {
     rctx->data_remaining = is_wav ? (data_chunk_size - (int)pcm_in_header) : -1;
 
     if (pthread_create(&la->thread, NULL, live_reader_thread, rctx) != 0) {
-        fprintf(stderr, "qwen_live_audio_start_stdin: failed to create reader thread\n");
+        tylog("qwen_live_audio_start_stdin: failed to create reader thread");
         free(rctx);
         qwen_live_audio_free(la);
         return NULL;

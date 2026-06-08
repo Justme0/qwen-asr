@@ -11,6 +11,7 @@
  */
 
 #include "qwen_asr.h"
+#include "log.h"
 #include "qwen_asr_kernels.h"
 #include "qwen_asr_safetensors.h"
 #include <stdio.h>
@@ -26,7 +27,7 @@ static float *load_f32(multi_safetensors_t *ms, const char *name) {
     safetensors_file_t *sf = NULL;
     const safetensor_t *t = multi_safetensors_find(ms, name, &sf);
     if (!t) {
-        fprintf(stderr, "decoder: weight not found: %s\n", name);
+        tylog("decoder: weight not found: %s", name);
         return NULL;
     }
     return safetensors_get_f32(sf, t);
@@ -36,7 +37,7 @@ static uint16_t *load_bf16_direct(multi_safetensors_t *ms, const char *name) {
     safetensors_file_t *sf = NULL;
     const safetensor_t *t = multi_safetensors_find(ms, name, &sf);
     if (!t) {
-        fprintf(stderr, "decoder: weight not found: %s\n", name);
+        tylog("decoder: weight not found: %s", name);
         return NULL;
     }
     return safetensors_get_bf16_direct(sf, t);
@@ -88,7 +89,7 @@ int qwen_decoder_load(qwen_decoder_t *dec, multi_safetensors_t *ms,
         if (!l->wq_weight_bf16 || !l->wk_weight_bf16 ||
             !l->wv_weight_bf16 || !l->wo_weight_bf16 ||
             !l->gate_weight_bf16 || !l->up_weight_bf16 || !l->down_weight_bf16) {
-            fprintf(stderr, "decoder: failed to load layer %d\n", i);
+            tylog("decoder: failed to load layer %d", i);
             return -1;
         }
 

@@ -7,6 +7,7 @@
  */
 
 #include "qwen_asr_tokenizer.h"
+#include "log.h"
 #include "qwen_asr_kernels.h"
 #include <limits.h>
 #include <stdint.h>
@@ -500,7 +501,7 @@ static int load_merges_map(qwen_tokenizer_t *tok, const char *merges_path) {
 qwen_tokenizer_t *qwen_tokenizer_load(const char *vocab_json_path) {
     FILE *f = fopen(vocab_json_path, "rb");
     if (!f) {
-        fprintf(stderr, "qwen_tokenizer_load: cannot open %s\n", vocab_json_path);
+        tylog("qwen_tokenizer_load: cannot open %s", vocab_json_path);
         return NULL;
     }
 
@@ -578,6 +579,16 @@ qwen_tokenizer_t *qwen_tokenizer_load(const char *vocab_json_path) {
     }
     free(json);
 
+    tylog("vocab_size = %d", vocab_size);
+    /* Log all id_to_text entries */
+    for (int i = 0; i < vocab_size; i++) {
+        if (tok->id_to_text[i]) {
+            // tylog("id_to_text[%d] = \"%s\"", i, tok->id_to_text[i]);
+        } else {
+            // tylog("id_to_text[%d] = null", i);
+        }
+    }
+
     int n_vocab_entries = 0;
     for (int i = 0; i < vocab_size; i++) if (tok->id_to_bpe[i]) n_vocab_entries++;
     tok->vocab_map_cap = next_pow2(n_vocab_entries * 2 + 1);
@@ -595,8 +606,8 @@ qwen_tokenizer_t *qwen_tokenizer_load(const char *vocab_json_path) {
     char merges_path[1024];
     if (derive_merges_path(vocab_json_path, merges_path, sizeof(merges_path)) == 0) {
         if (load_merges_map(tok, merges_path) != 0 && qwen_verbose >= 2) {
-            fprintf(stderr, "Tokenizer: merges not loaded from %s (encoding falls back to byte-level)\n",
-                    merges_path);
+            tylog("Tokenizer: merges not loaded from %s (encoding falls back to byte-level)",
+                  merges_path);
         }
     }
 

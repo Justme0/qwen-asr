@@ -12,9 +12,14 @@
 #include <stdio.h>
 #include <pthread.h>
 
-/* ========================================================================
- * Constants
- * ======================================================================== */
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+    /* ========================================================================
+     * Constants
+     * ======================================================================== */
 
 #define QWEN_SAMPLE_RATE      16000
 #define QWEN_MEL_BINS         128
@@ -322,5 +327,9 @@ extern int qwen_verbose;
 /* Monitor mode: show inline Unicode symbols on stderr for streaming diagnostics.
  * Symbols: ▶ encoder  · prefill  ▪ decode  ▸ slow decode  ⟳ window eviction */
 extern int qwen_monitor;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* QWEN_ASR_H */

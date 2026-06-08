@@ -4,6 +4,7 @@
  */
 
 #include "qwen_asr_safetensors.h"
+#include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -290,15 +291,15 @@ void safetensor_print(const safetensor_t *t) {
     const char *dtype_names[] = {"F32", "F16", "BF16", "I32", "I64", "BOOL"};
     const char *dtype_name = t->dtype >= 0 && t->dtype <= 5 ?
                              dtype_names[t->dtype] : "UNKNOWN";
-    printf("%s: dtype=%s, shape=[", t->name, dtype_name);
+    tylog("%s: dtype=%s, shape=[", t->name, dtype_name);
     for (int i = 0; i < t->ndim; i++) {
-        printf("%ld%s", (long)t->shape[i], i < t->ndim - 1 ? ", " : "");
+        tylog("%ld%s", (long)t->shape[i], i < t->ndim - 1 ? ", " : "");
     }
-    printf("]\n");
+    tylog("]");
 }
 
 void safetensors_print_all(const safetensors_file_t *sf) {
-    printf("File: %s (%d tensors)\n", sf->path, sf->num_tensors);
+    tylog("File: %s (%d tensors)", sf->path, sf->num_tensors);
     for (int i = 0; i < sf->num_tensors; i++) safetensor_print(&sf->tensors[i]);
 }
 
@@ -348,7 +349,7 @@ multi_safetensors_t *multi_safetensors_open(const char *model_dir) {
     closedir(dir);
 
     if (n_shards == 0) {
-        fprintf(stderr, "multi_safetensors_open: no safetensors files in %s\n", model_dir);
+        tylog("multi_safetensors_open: no safetensors files in %s", model_dir);
         free(ms);
         return NULL;
     }
@@ -361,7 +362,7 @@ multi_safetensors_t *multi_safetensors_open(const char *model_dir) {
         snprintf(path, sizeof(path), "%s/%s", model_dir, shard_names[i]);
         ms->shards[i] = safetensors_open(path);
         if (!ms->shards[i]) {
-            fprintf(stderr, "multi_safetensors_open: failed to open %s\n", path);
+            tylog("multi_safetensors_open: failed to open %s", path);
             multi_safetensors_close(ms);
             return NULL;
         }

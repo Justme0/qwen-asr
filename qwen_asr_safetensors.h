@@ -9,6 +9,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 #define SAFETENSORS_MAX_TENSORS 1024
 #define SAFETENSORS_MAX_SHARDS 8
 
@@ -73,5 +78,9 @@ int safetensor_is_bf16(const safetensor_t *t);
 int64_t safetensor_numel(const safetensor_t *t);
 void safetensor_print(const safetensor_t *t);
 void safetensors_print_all(const safetensors_file_t *sf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* QWEN_ASR_SAFETENSORS_H */

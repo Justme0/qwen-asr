@@ -6,16 +6,18 @@
  */
 
 #include "qwen_asr.h"
+#include "log.h"
+#include "qwen_asr_audio.h"
 #include "qwen_asr_kernels.h"
 #include "qwen_asr_safetensors.h"
-#include "qwen_asr_audio.h"
 #include "qwen_asr_tokenizer.h"
+#include <ctype.h>
+#include <limits.h>
+#include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <math.h>
-#include <limits.h>
 #include <sys/time.h>
 
 /* Global verbose flag */
@@ -160,7 +162,7 @@ static int detect_config(qwen_ctx_t *ctx) {
         cfg->dec_kv_heads = 8;
         cfg->dec_head_dim = 128;
         cfg->dec_intermediate = 6144;
-        if (qwen_verbose >= 1) fprintf(stderr, "Detected: Qwen3-ASR-1.7B\n");
+        if (qwen_verbose >= 1) tylog("Detected: Qwen3-ASR-1.7B");
     } else {
         /* 0.6B model */
         cfg->enc_d_model = 896;
@@ -175,7 +177,7 @@ static int detect_config(qwen_ctx_t *ctx) {
         cfg->dec_kv_heads = 8;
         cfg->dec_head_dim = 128;
         cfg->dec_intermediate = 3072;
-        if (qwen_verbose >= 1) fprintf(stderr, "Detected: Qwen3-ASR-0.6B\n");
+        if (qwen_verbose >= 1) tylog("Detected: Qwen3-ASR-0.6B");
     }
 
     /* Common parameters */
@@ -195,17 +197,20 @@ static int detect_config(qwen_ctx_t *ctx) {
  * ======================================================================== */
 
 qwen_ctx_t *qwen_load(const char *model_dir) {
+    /* Initialize logger (idempotent, only first call takes effect) */
+    tylib::MLOG_INIT(MLOG_DEF_LOGGER, 6, tylib::MLOG_F_TIME | tylib::MLOG_F_FILELINE | tylib::MLOG_F_FUNC, "./log/", "", 150 * 1024 * 1024);
+
     qwen_ctx_t *ctx = (qwen_ctx_t *)calloc(1, sizeof(qwen_ctx_t));
     if (!ctx) return NULL;
     snprintf(ctx->model_dir, sizeof(ctx->model_dir), "%s", model_dir);
 
     /* Open safetensors (multi-shard) */
     if (qwen_verbose >= 1)
-        fprintf(stderr, "Loading model from %s\n", model_dir);
+        tylog("Loading model from %s", model_dir);
 
     multi_safetensors_t *ms = multi_safetensors_open(model_dir);
     if (!ms) {
-        fprintf(stderr, "qwen_load: cannot open safetensors in %s\n", model_dir);
+        tylog("qwen_load: cannot open safetensors in %s", model_dir);
         free(ctx);
         return NULL;
     }
@@ -215,17 +220,17 @@ qwen_ctx_t *qwen_load(const char *model_dir) {
     detect_config(ctx);
 
     /* Load encoder weights */
-    if (qwen_verbose >= 1) fprintf(stderr, "Loading encoder weights...\n");
+    if (qwen_verbose >= 1) tylog("Loading encoder weights...");
     if (qwen_encoder_load(&ctx->encoder, ms, &ctx->config) != 0) {
-        fprintf(stderr, "qwen_load: failed to load encoder\n");
+        tylog("qwen_load: failed to load encoder");
         qwen_free(ctx);
         return NULL;
     }
 
     /* Load decoder weights */
-    if (qwen_verbose >= 1) fprintf(stderr, "Loading decoder weights...\n");
+    if (qwen_verbose >= 1) tylog("Loading decoder weights...");
     if (qwen_decoder_load(&ctx->decoder, ms, &ctx->config) != 0) {
-        fprintf(stderr, "qwen_load: failed to load decoder\n");
+        tylog("qwen_load: failed to load decoder");
         qwen_free(ctx);
         return NULL;
     }
@@ -242,7 +247,7 @@ qwen_ctx_t *qwen_load(const char *model_dir) {
     ctx->past_text_conditioning = 0;
     ctx->skip_silence = 0;
 
-    if (qwen_verbose >= 1) fprintf(stderr, "Model loaded.\n");
+    if (qwen_verbose >= 1) tylog("Model loaded.");
     return ctx;
 }
 
@@ -329,11 +334,11 @@ void qwen_free(qwen_ctx_t *ctx) {
 
 /*
  * Prompt format:
- *   PREFIX_HEAD: [<|im_start|>, "system", "\n"]
+ *   PREFIX_HEAD: [<|im_start|>, "system", ""]
  *   [optional system prompt text tokens]
- *   PREFIX_TAIL: [<|im_end|>, "\n", <|im_start|>, "user", "\n", <|audio_start|>]
+ *   PREFIX_TAIL: [<|im_end|>, "", <|im_start|>, "user", "", <|audio_start|>]
  *   AUDIO: [151676] × N_audio_tokens
- *   SUFFIX_BASE: [<|audio_end|>, <|im_end|>, "\n", <|im_start|>, "assistant", "\n"]
+ *   SUFFIX_BASE: [<|audio_end|>, <|im_end|>, "", <|im_start|>, "assistant", ""]
  *   [optional language tokens: "language X" + <asr_text>]
  */
 static const int PROMPT_PREFIX_HEAD[] = {
@@ -514,7 +519,7 @@ static int prepare_prompt_tokens(qwen_ctx_t *ctx, qwen_tokenizer_t *tokenizer) {
     if (ctx->prompt && ctx->prompt[0] != '\0') {
         ctx->prompt_tokens = qwen_tokenizer_encode(tokenizer, ctx->prompt, &ctx->n_prompt_tokens);
         if (!ctx->prompt_tokens) {
-            fprintf(stderr, "qwen: failed to encode --prompt text\n");
+            tylog("qwen: failed to encode --prompt text");
             return -1;
         }
     }
@@ -526,7 +531,7 @@ static int prepare_prompt_tokens(qwen_ctx_t *ctx, qwen_tokenizer_t *tokenizer) {
         int n_lang_txt = 0;
         int *lang_txt_tokens = qwen_tokenizer_encode(tokenizer, force_text, &n_lang_txt);
         if (!lang_txt_tokens) {
-            fprintf(stderr, "qwen: failed to encode --language text\n");
+            tylog("qwen: failed to encode --language text");
             return -1;
         }
 
@@ -603,8 +608,8 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
     if (!mel) return NULL;
     double mel_ms = get_time_ms() - t0;
 
-    if (qwen_verbose >= 2)
-        fprintf(stderr, "  Mel: %d frames (%.0f ms)\n", mel_frames, mel_ms);
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Mel spectrogram: %d frames (%.0f ms)", mel_frames, mel_ms);
 
     /* ---- Encoder ---- */
     t0 = get_time_ms();
@@ -614,8 +619,8 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
     if (!enc_output) return NULL;
     double enc_ms = get_time_ms() - t0;
 
-    if (qwen_verbose >= 2)
-        fprintf(stderr, "  Encoder: %d tokens (%.0f ms)\n", enc_seq_len, enc_ms);
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Encoder: %d tokens (%.0f ms)", enc_seq_len, enc_ms);
 
     if (prepare_prompt_tokens(ctx, tokenizer) != 0) {
         free(enc_output);
@@ -699,7 +704,7 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
                               QWEN_TOKEN_ASR_TEXT, dim);
     }
 
-    /* ---- Decoder prefill ---- */
+    /* ---- Decoder prefill (includes first token generation = TTFT) ---- */
     t0 = get_time_ms();
     ctx->kv_cache_len = 0; /* Reset KV cache for this segment */
     int prefill_len = total_seq - 1; /* prefill all but last */
@@ -708,11 +713,12 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
     /* First token from last prefill position */
     float *last_embed = input_embeds + (size_t)prefill_len * dim;
     int token = qwen_decoder_forward(ctx, last_embed);
+    tylog("force get piece[%d]=%s.", token, qwen_tokenizer_decode(tokenizer, token));
     free(input_embeds);
 
     double prefill_ms = get_time_ms() - t0;
-    if (qwen_verbose >= 2)
-        fprintf(stderr, "  Prefill: %d tokens (%.0f ms)\n", total_seq, prefill_ms);
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Prefill (TTFT): %d tokens (%.0f ms)", total_seq, prefill_ms);
 
     /* ---- Autoregressive decode ---- */
     t0 = get_time_ms();
@@ -738,6 +744,7 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
         } else if (past_asr_text) {
             /* Decode and emit this text token */
             const char *piece = qwen_tokenizer_decode(tokenizer, token);
+            tylog("get piece[%d]=%s.", token, piece);
             size_t piece_len = strlen(piece);
             if (text_len + piece_len + 1 > text_cap) {
                 while (text_len + piece_len + 1 > text_cap) text_cap *= 2;
@@ -755,12 +762,17 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
 
         /* Embed and generate next token */
         tok_embed_bf16_to_f32(tmp_embed, ctx->decoder.tok_embeddings_bf16, token, dim);
+        double tok_t0 = get_time_ms();
         token = qwen_decoder_forward(ctx, tmp_embed);
+        tylog("force get piece[%d]=%s.", token, qwen_tokenizer_decode(tokenizer, token));
+        double tok_ms = get_time_ms() - tok_t0;
+        if (qwen_verbose >= 2)
+            tylog("  [perf] Decode token #%d: %.2f ms", n_generated, tok_ms);
     }
 
     double decode_ms = get_time_ms() - t0;
-    if (qwen_verbose >= 2)
-        fprintf(stderr, "  Decode: %d tokens (%.0f ms, %.1f ms/token)\n",
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Decode: %d tokens (%.0f ms, %.1f ms/token)",
                 n_generated, decode_ms,
                 n_generated > 0 ? decode_ms / n_generated : 0);
 
@@ -778,6 +790,10 @@ static char *transcribe_segment(qwen_ctx_t *ctx, const float *samples,
     ctx->perf_encode_ms += mel_ms + enc_ms;
     ctx->perf_decode_ms += prefill_ms + decode_ms;
     if (out_text_tokens) *out_text_tokens = n_text_tokens;
+
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Segment total: %.0f ms (mel=%.0f enc=%.0f prefill=%.0f decode=%.0f)",
+                get_time_ms() - seg_t0, mel_ms, enc_ms, prefill_ms, decode_ms);
 
     return text;
 }
@@ -856,16 +872,17 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
                              (float)(n_samples > 0 ? n_samples : 1);
             float skipped_pct = 100.0f - used_pct;
             if (skipped_pct < 0.0f) skipped_pct = 0.0f;
-            fprintf(stderr, "Silence skip: used %.1f%%, skipped %.1f%% (%d -> %d samples)\n",
+            tylog("Silence skip: used %.1f%%, skipped %.1f%% (%d -> %d samples)",
                     used_pct, skipped_pct, n_samples, audio_n_samples);
         }
     }
 
     if (qwen_verbose >= 2)
-        fprintf(stderr, "Audio: %d samples (%.1f seconds)\n",
+        tylog("Audio: %d samples (%.1f seconds)",
                 audio_n_samples, (float)audio_n_samples / QWEN_SAMPLE_RATE);
 
     /* Load tokenizer once for all segments */
+    double t_tok0 = get_time_ms();
     char vocab_path[1024];
     snprintf(vocab_path, sizeof(vocab_path), "%s/vocab.json", ctx->model_dir);
     qwen_tokenizer_t *tokenizer = qwen_tokenizer_load(vocab_path);
@@ -878,6 +895,8 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
         free(compacted_samples);
         return NULL;
     }
+    if (qwen_verbose >= 1)
+        tylog("  [perf] Tokenizer load: %.0f ms", get_time_ms() - t_tok0);
 
     /* Determine segment boundaries.
      * Clamp search window to half the segment size so split points
@@ -895,6 +914,8 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
         return text;
     }
 
+    tylog("multi-split");
+
     /* Build split points */
     int splits[128]; /* max 128 segments */
     int n_splits = 0;
@@ -911,7 +932,7 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
     splits[n_splits] = audio_n_samples; /* end sentinel */
 
     if (qwen_verbose >= 2)
-        fprintf(stderr, "Splitting into %d segments\n", n_splits);
+        tylog("Splitting into %d segments", n_splits);
 
     /* Transcribe each segment and concatenate */
     size_t result_cap = 4096;
@@ -933,7 +954,7 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
         int seg_samples = seg_end - seg_start;
 
         if (qwen_verbose >= 2)
-            fprintf(stderr, "Segment %d/%d: core %.1f-%.1fs, decode %.1f-%.1fs (%d samples)\n",
+            tylog("Segment %d/%d: core %.1f-%.1fs, decode %.1f-%.1fs (%d samples)",
                     s + 1, n_splits,
                     (float)core_start / QWEN_SAMPLE_RATE,
                     (float)core_end / QWEN_SAMPLE_RATE,
@@ -988,9 +1009,9 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
                                                seg_text_tokens)) {
             conditioning_collapses++;
             if (qwen_verbose >= 2) {
-                fprintf(stderr,
+                tylog(
                         "Segment mode: retrying segment %d/%d without past-text conditioning "
-                        "(core=%.1fs, tokens=%d)\n",
+                        "(core=%.1fs, tokens=%d)",
                         s + 1, n_splits,
                         (float)(core_end - core_start) / QWEN_SAMPLE_RATE,
                         seg_text_tokens);
@@ -1003,7 +1024,7 @@ char *qwen_transcribe_audio(qwen_ctx_t *ctx, const float *samples, int n_samples
             if (conditioning_collapses >= 2) {
                 use_past_conditioning = 0;
                 if (qwen_verbose >= 2) {
-                    fprintf(stderr, "Segment mode: disabling past text conditioning after %d collapses\n",
+                    tylog("Segment mode: disabling past text conditioning after %d collapses",
                             conditioning_collapses);
                 }
             }
@@ -1233,7 +1254,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
                              (float)(n_samples > 0 ? n_samples : 1);
             float skipped_pct = 100.0f - used_pct;
             if (skipped_pct < 0.0f) skipped_pct = 0.0f;
-            fprintf(stderr, "Silence skip: used %.1f%%, skipped %.1f%% (%d -> %lld samples)\n",
+            tylog("Silence skip: used %.1f%%, skipped %.1f%% (%d -> %lld samples)",
                     used_pct, skipped_pct, n_samples, (long long)audio_n_samples);
         }
     }
@@ -1297,7 +1318,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
     }
     if (live && !use_enc_cache) {
         if (qwen_verbose >= 1) {
-            fprintf(stderr, "Streaming (live): forcing encoder cache on (no-cache mode disabled)\n");
+            tylog("Streaming (live): forcing encoder cache on (no-cache mode disabled)");
         }
         use_enc_cache = 1;
     }
@@ -1320,10 +1341,10 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
 
     if (qwen_verbose >= 2) {
         if (live)
-            fprintf(stderr,
+            tylog(
                     "Streaming (live): chunk=%.1f s, rollback=%d, "
                     "unfixed=%d, max_new=%d, enc_window=%.1fs, enc_cache=%s, prefix=%s, "
-                    "max_enc_win=%d, max_prefix=%d\n",
+                    "max_enc_win=%d, max_prefix=%d",
                     ctx->stream_chunk_sec, rollback,
                     unfixed_chunks, max_new_tokens,
                     (float)enc_window_frames / 100.0f,
@@ -1331,9 +1352,9 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
                     ctx->past_text_conditioning ? "on" : "off",
                     QWEN_STREAM_MAX_ENC_WINDOWS, QWEN_STREAM_MAX_PREFIX_TOKENS);
         else
-            fprintf(stderr,
+            tylog(
                     "Streaming: %lld samples (%.1f s), chunk=%.1f s, rollback=%d, "
-                    "unfixed=%d, max_new=%d, enc_window=%.1fs, enc_cache=%s, prefix=%s\n",
+                    "unfixed=%d, max_new=%d, enc_window=%.1fs, enc_cache=%s, prefix=%s",
                     (long long)audio_n_samples, (float)audio_n_samples / QWEN_SAMPLE_RATE,
                     ctx->stream_chunk_sec, rollback,
                     unfixed_chunks, max_new_tokens,
@@ -1362,7 +1383,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
      * decoding entirely. (In live mode we must still use the chunked loop.) */
     if (!ctx->token_cb && !live) {
         if (qwen_verbose >= 2) {
-            fprintf(stderr, "Streaming: no token callback, using direct final refinement\n");
+            tylog("Streaming: no token callback, using direct final refinement");
         }
         if (audio_n_samples > INT_MAX) {
             qwen_tokenizer_free(tokenizer);
@@ -1446,9 +1467,9 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
             int64_t local_end = local_base_sample + local_n_samples;
             if (local_end < live_start) {
                 if (qwen_verbose >= 1) {
-                    fprintf(stderr,
+                    tylog(
                             "Streaming (live): local buffer overrun, resyncing "
-                            "(local_end=%lld, live_start=%lld)\n",
+                            "(local_end=%lld, live_start=%lld)",
                             (long long)local_end, (long long)live_start);
                 }
                 local_base_sample = live_start;
@@ -1530,8 +1551,8 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
             double enc_ms = get_time_ms() - t0;
             ctx->perf_encode_ms += enc_ms;
             if (qwen_verbose >= 2) {
-                fprintf(stderr,
-                        "  Encoder: %d tokens from 0.0-%.1f s (full recompute, %.0f ms)\n",
+                tylog(
+                        "  Encoder: %d tokens from 0.0-%.1f s (full recompute, %.0f ms)",
                         enc_seq_len,
                         (float)audio_cursor / QWEN_SAMPLE_RATE,
                         enc_ms);
@@ -1618,7 +1639,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
                     evicted++;
                 }
                 if (evicted && qwen_monitor) {
-                    fprintf(stderr, "\xe2\x9f\xb3");  /* ⟳ = window eviction */
+                    tylog("\xe2\x9f\xb3");  /* ⟳ = window eviction */
                     fflush(stderr);
                 }
             }
@@ -1655,8 +1676,8 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
             if (qwen_verbose >= 2) {
                 double enc_ms = get_time_ms() - t0;
                 ctx->perf_encode_ms += enc_ms;
-                fprintf(stderr,
-                        "  Encoder: %d tokens from 0.0-%.1f s (cached windows=%d, partial=%.1f s, %.0f ms)\n",
+                tylog(
+                        "  Encoder: %d tokens from 0.0-%.1f s (cached windows=%d, partial=%.1f s, %.0f ms)",
                         enc_seq_len,
                         (float)audio_cursor / QWEN_SAMPLE_RATE,
                         n_enc_cache - enc_cache_start,
@@ -1668,7 +1689,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
                 ctx->perf_encode_ms += enc_ms;
             }
             if (qwen_monitor) {
-                fprintf(stderr, "\xe2\x96\xb6");  /* ▶ = encoder */
+                tylog("\xe2\x96\xb6");  /* ▶ = encoder */
                 fflush(stderr);
             }
         }
@@ -1798,10 +1819,10 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
         double prefill_ms = get_time_ms() - t0;
         ctx->perf_decode_ms += prefill_ms;
         if (qwen_verbose >= 2)
-            fprintf(stderr, "  Prefill: %d tokens (%d prefix, reused %d) (%.0f ms)\n",
+            tylog("  Prefill: %d tokens (%d prefix, reused %d) (%.0f ms)",
                     total_seq, n_prefix_tokens, reused_prefill, prefill_ms);
         if (qwen_monitor) {
-            fprintf(stderr, "\xc2\xb7");  /* · = prefill */
+            tylog("\xc2\xb7");  /* · = prefill */
             fflush(stderr);
         }
 
@@ -1831,7 +1852,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
         double decode_ms = get_time_ms() - t0;
         ctx->perf_decode_ms += decode_ms;
         if (qwen_verbose >= 2)
-            fprintf(stderr, "  Decode: %d tokens (%.0f ms, %.1f ms/token%s)\n",
+            tylog("  Decode: %d tokens (%.0f ms, %.1f ms/token%s)",
                     n_generated, decode_ms,
                     n_generated > 0 ? decode_ms / n_generated : 0,
                     (n_generated >= max_new_tokens &&
@@ -1840,7 +1861,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
         if (qwen_monitor) {
             /* ▪ = normal decode, ▸ = slow (>30ms/token) */
             double ms_per_tok = n_generated > 0 ? decode_ms / n_generated : 0;
-            fprintf(stderr, "%s", ms_per_tok > 30 ? "\xe2\x96\xb8" : "\xe2\x96\xaa");
+            tylog("%s", ms_per_tok > 30 ? "\xe2\x96\xb8" : "\xe2\x96\xaa");
             fflush(stderr);
         }
 
@@ -1902,7 +1923,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
         n_raw_tokens = n_raw_new;
         free(chunk_tokens);
         if (dropped_repeat_tokens > 0 && qwen_verbose >= 2) {
-            fprintf(stderr, "  Decode: dropped %d repeated tokens\n", dropped_repeat_tokens);
+            tylog("  Decode: dropped %d repeated tokens", dropped_repeat_tokens);
         }
 
         /* Parse text region from raw stream output:
@@ -1986,7 +2007,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
                 stagnant_chunks = 0;
                 did_recovery_reset = 1;
                 if (qwen_monitor) {
-                    fprintf(stderr, "!");
+                    tylog("!");
                     fflush(stderr);
                 }
             } else {
@@ -2088,14 +2109,14 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
 
         if (qwen_verbose >= 2) {
             if (prefix_offset > 0)
-                fprintf(stderr, "  Prefix window: %d/%d tokens (offset %d)\n",
+                tylog("  Prefix window: %d/%d tokens (offset %d)",
                         n_prefix_tokens, n_prefix_tokens_full, prefix_offset);
             if (did_recovery_reset) {
-                fprintf(stderr, "  Recovery reset applied\n");
+                tylog("  Recovery reset applied");
             } else if (did_periodic_reset) {
-                fprintf(stderr, "  Periodic reset applied\n");
+                tylog("  Periodic reset applied");
             }
-            fprintf(stderr, "  Commit: candidate=%d tokens, emitted_total=%d\n",
+            tylog("  Commit: candidate=%d tokens, emitted_total=%d",
                     candidate_len, n_stable_text_tokens);
         }
 
@@ -2130,7 +2151,7 @@ static char *stream_impl(qwen_ctx_t *ctx, const float *samples, int n_samples,
     free(enc_cache);
     if (qwen_verbose >= 2 && prefill_total_tokens > 0) {
         double reuse_pct = 100.0 * (double)prefill_reused_tokens / (double)prefill_total_tokens;
-        fprintf(stderr, "  Prefill reuse: %d/%d tokens (%.1f%%)\n",
+        tylog("  Prefill reuse: %d/%d tokens (%.1f%%)",
                 prefill_reused_tokens, prefill_total_tokens, reuse_pct);
     }
     free(prev_prefill_embeds);
@@ -2163,7 +2184,7 @@ char *qwen_transcribe(qwen_ctx_t *ctx, const char *wav_path) {
     int n_samples = 0;
     float *samples = qwen_load_wav(wav_path, &n_samples);
     if (!samples) {
-        fprintf(stderr, "qwen_transcribe: cannot load %s\n", wav_path);
+        tylog("qwen_transcribe: cannot load %s", wav_path);
         return NULL;
     }
     char *text = qwen_transcribe_audio(ctx, samples, n_samples);
